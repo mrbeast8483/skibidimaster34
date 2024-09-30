@@ -6,13 +6,7 @@ import re
 from datetime import datetime
 import aiohttp
 import certifi
-import asyncio
-import uvloop
-
-
-# Set uvloop as the default event loop policy
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-
+import gc
 
 # Set up the bot with necessary intents
 intents = discord.Intents.default()
@@ -23,6 +17,9 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 
 # Cache for storing usernames to avoid redundant API calls
 username_cache = {}
+
+# Global aiohttp session with limited connection pool
+session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10))
 
 # Whitelist file path
 whitelist_file = 'whitelist.txt'
@@ -69,22 +66,21 @@ async def get_roblox_username(user_id):
         return username_cache[user_id]
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f'https://users.roblox.com/v1/users/{user_id}', ssl=certifi.where()) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    username = data.get('name', 'Unknown')
-                    username_cache[user_id] = username
-                    return username
-                else:
-                    username_cache[user_id] = 'Unknown'
-                    return 'Unknown'
+        async with session.get(f'https://users.roblox.com/v1/users/{user_id}', ssl=certifi.where()) as response:
+            if response.status == 200:
+                data = await response.json()
+                username = data.get('name', 'Unknown')
+                username_cache[user_id] = username
+                return username
+            else:
+                username_cache[user_id] = 'Unknown'
+                return 'Unknown'
     except Exception as e:
         print(f"Error retrieving username for User ID {user_id}: {e}")
         username_cache[user_id] = 'Unknown'
         return 'Unknown'
 
-# Helper function for "Alt Checker" analysis
+# Helper function for "Alt Checker" analysis (streaming file processing)
 async def alt_checker(logs_folder):
     user_pattern = r'userid:\s*([^,\s]+)'
     timestamp_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'
@@ -94,20 +90,22 @@ async def alt_checker(logs_folder):
         for file in files:
             if file.endswith('.txt') or file.endswith('.log'):
                 with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as log_file:
-                    content = log_file.read()
-                    user_matches = re.findall(user_pattern, content)
-                    timestamp_match = re.search(timestamp_pattern, content)
-                    
-                    if timestamp_match:
-                        timestamp = timestamp_match.group(1)
-                        formatted_timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%B %d, %I:%M%p")
+                    for line in log_file:
+                        user_matches = re.findall(user_pattern, line)
+                        timestamp_match = re.search(timestamp_pattern, line)
                         
-                        for user_id in user_matches:
-                            username = await get_roblox_username(user_id)  # Use await here
-                            user_data.append(f"{username} - {formatted_timestamp}")
+                        if timestamp_match:
+                            timestamp = timestamp_match.group(1)
+                            formatted_timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%B %d, %I:%M%p")
+                            
+                            for user_id in user_matches:
+                                username = await get_roblox_username(user_id)
+                                user_data.append(f"{username} - {formatted_timestamp}")
+    # Trigger garbage collection
+    gc.collect()
     return user_data
 
-# Helper function for "FFlag Checker" analysis
+# Helper function for "FFlag Checker" analysis (streaming file processing)
 async def fflag_checker(logs_folder):
     json_pattern = r'LoadClientSettingsFromLocal: "(.*?)"(?=\r?\n|\Z)'  # Correct JSON pattern
     user_pattern = r'userid:\s*([^,\s]+)'
@@ -118,27 +116,28 @@ async def fflag_checker(logs_folder):
         for file in files:
             if file.endswith('.log'):
                 with open(os.path.join(root, file), 'r', encoding='utf-8', errors='ignore') as log_file:
-                    content = log_file.read()
-                    json_matches = re.findall(json_pattern, content, re.DOTALL)
-
-                    for json_content in json_matches:
-                        if json_content not in json_data:
-                            json_data[json_content] = []
-
-                        # Find occurrences (user IDs) in the log content
-                        user_ids = re.findall(user_pattern, content)
-                        timestamp_match = re.search(timestamp_pattern, content)
+                    for line in log_file:
+                        json_matches = re.findall(json_pattern, line)
                         
-                        if timestamp_match:
-                            timestamp = timestamp_match.group(1)
-                            formatted_timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%B %d, %I:%M%p")
+                        for json_content in json_matches:
+                            if json_content not in json_data:
+                                json_data[json_content] = []
 
-                        # Record each user occurrence with username, log file name, and timestamp
-                        for user_id in user_ids:
-                            username = await get_roblox_username(user_id)  # Use await here
-                            occurrence = f"{username} - {file} - {formatted_timestamp}"
-                            json_data[json_content].append(occurrence)
+                            # Find occurrences (user IDs) in the line content
+                            user_ids = re.findall(user_pattern, line)
+                            timestamp_match = re.search(timestamp_pattern, line)
+                            
+                            if timestamp_match:
+                                timestamp = timestamp_match.group(1)
+                                formatted_timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%B %d, %I:%M%p")
 
+                            # Record each user occurrence with username, log file name, and timestamp
+                            for user_id in user_ids:
+                                username = await get_roblox_username(user_id)
+                                occurrence = f"{username} - {file} - {formatted_timestamp}"
+                                json_data[json_content].append(occurrence)
+    # Trigger garbage collection
+    gc.collect()
     return json_data
 
 # Define the /whitelist command
@@ -247,6 +246,11 @@ async def analyze(interaction: discord.Interaction, file: discord.Attachment):
                 for name in dirs:
                     os.rmdir(os.path.join(root, name))
             os.rmdir(extract_path)
+
+# Close the aiohttp session when the bot shuts down
+@bot.event
+async def on_shutdown():
+    await session.close()
 
 # Run the bot
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
