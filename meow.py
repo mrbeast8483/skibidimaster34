@@ -18,8 +18,8 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 # Cache for storing usernames to avoid redundant API calls
 username_cache = {}
 
-# Global aiohttp session with limited connection pool
-session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10))
+# Global session placeholder
+session = None
 
 # Whitelist file path
 whitelist_file = 'whitelist.txt'
@@ -45,6 +45,9 @@ whitelist = load_whitelist()
 
 @bot.event
 async def on_ready():
+    global session
+    # Create the aiohttp session with limited connection pool
+    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10))
     print(f'Bot is online as {bot.user}')
     
     # Sync global commands
@@ -61,6 +64,7 @@ def extract_zip(zip_filepath, extract_to):
 
 # Helper function to get the Roblox username from the user ID using aiohttp
 async def get_roblox_username(user_id):
+    global session
     # Check if the username is already in the cache
     if user_id in username_cache:
         return username_cache[user_id]
@@ -250,7 +254,9 @@ async def analyze(interaction: discord.Interaction, file: discord.Attachment):
 # Close the aiohttp session when the bot shuts down
 @bot.event
 async def on_shutdown():
-    await session.close()
+    global session
+    if session:
+        await session.close()
 
 # Run the bot
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
