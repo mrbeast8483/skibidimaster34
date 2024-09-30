@@ -6,6 +6,13 @@ import re
 from datetime import datetime
 import aiohttp
 import certifi
+import asyncio
+import uvloop
+
+
+# Set uvloop as the default event loop policy
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+
 
 # Set up the bot with necessary intents
 intents = discord.Intents.default()
