@@ -4,13 +4,12 @@ import os
 import zipfile
 import re
 from datetime import datetime
-import requests
+import aiohttp
+import certifi
 
 # Set up the bot with necessary intents
 intents = discord.Intents.default()
 intents.message_content = True  # Required for message handling in DMs
-
-bot_token = os.getenv('DISCORD_BOT_TOKEN')
 
 # Create the bot instance
 bot = commands.Bot(command_prefix='/', intents=intents)
@@ -56,29 +55,30 @@ def extract_zip(zip_filepath, extract_to):
     with zipfile.ZipFile(zip_filepath, 'r') as zip_ref:
         zip_ref.extractall(extract_to)
 
-# Helper function to get the Roblox username from the user ID
-def get_roblox_username(user_id):
+# Helper function to get the Roblox username from the user ID using aiohttp
+async def get_roblox_username(user_id):
     # Check if the username is already in the cache
     if user_id in username_cache:
         return username_cache[user_id]
 
     try:
-        response = requests.get(f'https://users.roblox.com/v1/users/{user_id}')
-        if response.status_code == 200:
-            username = response.json().get('name', 'Unknown')
-            # Store in cache
-            username_cache[user_id] = username
-            return username
-        else:
-            username_cache[user_id] = 'Unknown'
-            return 'Unknown'
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'https://users.roblox.com/v1/users/{user_id}', ssl=certifi.where()) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    username = data.get('name', 'Unknown')
+                    username_cache[user_id] = username
+                    return username
+                else:
+                    username_cache[user_id] = 'Unknown'
+                    return 'Unknown'
     except Exception as e:
         print(f"Error retrieving username for User ID {user_id}: {e}")
         username_cache[user_id] = 'Unknown'
         return 'Unknown'
 
 # Helper function for "Alt Checker" analysis
-def alt_checker(logs_folder):
+async def alt_checker(logs_folder):
     user_pattern = r'userid:\s*([^,\s]+)'
     timestamp_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'
     user_data = []
@@ -96,12 +96,12 @@ def alt_checker(logs_folder):
                         formatted_timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%B %d, %I:%M%p")
                         
                         for user_id in user_matches:
-                            username = get_roblox_username(user_id)
+                            username = await get_roblox_username(user_id)  # Use await here
                             user_data.append(f"{username} - {formatted_timestamp}")
     return user_data
 
 # Helper function for "FFlag Checker" analysis
-def fflag_checker(logs_folder):
+async def fflag_checker(logs_folder):
     json_pattern = r'LoadClientSettingsFromLocal: "(.*?)"(?=\r?\n|\Z)'  # Correct JSON pattern
     user_pattern = r'userid:\s*([^,\s]+)'
     timestamp_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'
@@ -128,7 +128,7 @@ def fflag_checker(logs_folder):
 
                         # Record each user occurrence with username, log file name, and timestamp
                         for user_id in user_ids:
-                            username = get_roblox_username(user_id)
+                            username = await get_roblox_username(user_id)  # Use await here
                             occurrence = f"{username} - {file} - {formatted_timestamp}"
                             json_data[json_content].append(occurrence)
 
@@ -197,8 +197,8 @@ async def analyze(interaction: discord.Interaction, file: discord.Attachment):
         extract_zip(zip_filepath, extract_path)
 
         # Perform the analysis
-        alt_logs = alt_checker(extract_path)
-        flag_logs = fflag_checker(extract_path)
+        alt_logs = await alt_checker(extract_path)  # Use await here
+        flag_logs = await fflag_checker(extract_path)  # Use await here
 
         # Format the "Alt Checker" output
         alt_output = "AltLogs:\n" + "\n".join(alt_logs) if alt_logs else "No user IDs found."
@@ -242,4 +242,4 @@ async def analyze(interaction: discord.Interaction, file: discord.Attachment):
             os.rmdir(extract_path)
 
 # Run the bot
-bot.run(bot_token)
+bot.run(os.getenv('DISCORD_BOT_TOKEN'))
