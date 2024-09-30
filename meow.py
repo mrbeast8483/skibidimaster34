@@ -5,6 +5,7 @@ import zipfile
 import re
 from datetime import datetime
 import aiohttp
+import ssl
 import certifi
 import gc
 
@@ -46,8 +47,11 @@ whitelist = load_whitelist()
 @bot.event
 async def on_ready():
     global session
+    # Create an SSL context for aiohttp to use with certifi certificates
+    ssl_context = ssl.create_default_context()
+    ssl_context.load_verify_locations(certifi.where())
     # Create the aiohttp session with limited connection pool
-    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10))
+    session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=10, ssl=ssl_context))
     print(f'Bot is online as {bot.user}')
     
     # Sync global commands
@@ -70,7 +74,7 @@ async def get_roblox_username(user_id):
         return username_cache[user_id]
 
     try:
-        async with session.get(f'https://users.roblox.com/v1/users/{user_id}', ssl=certifi.where()) as response:
+        async with session.get(f'https://users.roblox.com/v1/users/{user_id}') as response:
             if response.status == 200:
                 data = await response.json()
                 username = data.get('name', 'Unknown')
@@ -185,10 +189,8 @@ async def analyze(interaction: discord.Interaction, file: discord.Attachment):
         await interaction.response.send_message("You are not whitelisted to use this command.", ephemeral=True)
         return
 
-    # Check if the command is in a DM or server
-    context = "in a DM" if interaction.guild is None else "in the server"
-    await interaction.response.defer()
-    await interaction.followup.send(f"Analyzing logs {context}...", ephemeral=True)
+    # Immediately defer the response to keep the interaction alive
+    await interaction.response.defer(thinking=True)
 
     # Check if the uploaded file is a zip file
     if not file.filename.endswith('.zip'):
